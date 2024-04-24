@@ -1,121 +1,345 @@
 "use client";
 
-import React,{ useState,useEffect } from "react";
-import { ethers } from "ethers";
-import {MusicShop__factory} from "@/typechain/factories/contracts"
-import type {MusicShop} from "@/typechain"
+import React, {useState, useEffect, FormEvent} from "react";
 
-// import Image from "next/image";
+import { ethers } from "ethers";
+import { MusicShop__factory } from "@/typechain/factories/contracts";
+import type {MusicShop } from "@/typechain";
+import type { BrowserProvider } from "ethers";
+
+import ConnectWallet from "@/components/ConnectWallet";
+import WaitingForTransactionMessage from "@/components/WaitingForTransactionMessage";
+import TransactionErrorMessage from "@/components/TransactionErrorMessage";
+
+const HARDHAT_NETWORK_ID = "0x539";
+const MUSIC_SHOP_ADDRESS = "0x5fbdb2315678afecb367f032d93f642f64180aa3";
+
+declare let window: any;
+
+type CurrentConnectionProps = {
+  provider: BrowserProvider | undefined;
+  shop: MusicShop | undefined;
+  signer: ethers.JsonRpcSigner | undefined;
+};
+
+type AlbumProps = {
+  index: ethers.BigNumberish;
+  uid: string;
+  title: string;
+  price: ethers.BigNumberish;
+  quantity: ethers.BigNumberish;
+};
 
 export default function Home() {
-  return (
-    <main className="flex min-h-screen flex-col items-center justify-between p-24">
+  const [networkError, setNetworkError] = useState<string>();
+  const [txBeingSent, setTxBeingSent] = useState<string>();
+  const [transactionError, setTransactionError] = useState<any>();
+  const [currentBalance, setCurrentBalance] = useState<string>();
+  const [isOwner, setIsOwner] = useState<boolean>(false);
+  const [albums, setAlbums] = useState<AlbumProps[]>([]);
+  const [currentConnection, setCurrentConnection] =
+  useState<CurrentConnectionProps>();
 
-      {/* <div className="z-10 w-full max-w-5xl items-center justify-between font-mono text-sm lg:flex">
-        <p className="fixed left-0 top-0 flex w-full justify-center border-b border-gray-300 bg-gradient-to-b from-zinc-200 pb-6 pt-8 backdrop-blur-2xl dark:border-neutral-800 dark:bg-zinc-800/30 dark:from-inherit lg:static lg:w-auto  lg:rounded-xl lg:border lg:bg-gray-200 lg:p-4 lg:dark:bg-zinc-800/30">
-          Get started by editing&nbsp;
-          <code className="font-mono font-bold">src/app/page.tsx</code>
-        </p>
-        <div className="fixed bottom-0 left-0 flex h-48 w-full items-end justify-center bg-gradient-to-t from-white via-white dark:from-black dark:via-black lg:static lg:size-auto lg:bg-none">
-          <a
-            className="pointer-events-none flex place-items-center gap-2 p-8 lg:pointer-events-auto lg:p-0"
-            href="https://vercel.com?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            By{" "}
-            <Image
-              src="/vercel.svg"
-              alt="Vercel Logo"
-              className="dark:invert"
-              width={100}
-              height={24}
-              priority
-            />
-          </a>
-        </div>
-      </div>
 
-      <div className="relative z-[-1] flex place-items-center before:absolute before:h-[300px] before:w-full before:-translate-x-1/2 before:rounded-full before:bg-gradient-radial before:from-white before:to-transparent before:blur-2xl before:content-[''] after:absolute after:-z-20 after:h-[180px] after:w-full after:translate-x-1/3 after:bg-gradient-conic after:from-sky-200 after:via-blue-200 after:blur-2xl after:content-[''] before:dark:bg-gradient-to-br before:dark:from-transparent before:dark:to-blue-700 before:dark:opacity-10 after:dark:from-sky-900 after:dark:via-[#0141ff] after:dark:opacity-40 sm:before:w-[480px] sm:after:w-[240px] before:lg:h-[360px]">
-        <Image
-          className="relative dark:drop-shadow-[0_0_0.3rem_#ffffff70] dark:invert"
-          src="/next.svg"
-          alt="Next.js Logo"
-          width={180}
-          height={37}
-          priority
+  useEffect(() => {
+    (async () => {
+      if (currentConnection?.provider && currentConnection.signer) {
+        setCurrentBalance(
+          (
+            await currentConnection.provider.getBalance(
+              currentConnection.signer.address,
+              await currentConnection.provider.getBlockNumber(),
+            )
+          ).toString()
+        );
+      }
+    })();
+  }, [currentConnection, txBeingSent]);
+
+
+  useEffect(() => {
+    (async () => {
+      if (currentConnection?.shop && currentConnection.signer) {
+        // const newAlbums = (await currentConnection.shop.allAlbums()).map(
+        //   (album): AlbumProps => {
+        //     return {
+        //       index: album[0].toString(),
+        //       uid: album[1],
+        //       title: album[2],
+        //       price: album[3],
+        //       quantity: album[4],
+        //     };
+        //   }
+        // );
+
+        // setAlbums((albums) => [...albums, ...newAlbums]);
+
+        setIsOwner(
+          ethers.getAddress(await currentConnection.shop.owner()) ===
+            (await currentConnection.signer.getAddress())
+        );
+      }
+    })();
+  }, [currentConnection]);
+
+
+
+  const _connectWallet = async () => {
+    if (window.ethereum === undefined) {
+      setNetworkError("Please install Metamask!");
+      return;
+    }
+
+    if (!(await _checkNetwork())) {
+      return;
+    }
+
+    const [selectedAccount] = await window.ethereum.request({
+      method: "eth_requestAccounts",
+    });
+
+    await _initialize(ethers.getAddress(selectedAccount));
+
+    window.ethereum.on(
+      "accountsChanged",
+      async ([newAccount]: [newAccount: string]) => {
+        if (newAccount === undefined) {
+          return _resetState();
+        }
+
+        await _initialize(ethers.getAddress(newAccount));
+      }
+    );
+
+    window.ethereum.on("chainChanged", ([_networkId]: any) => {
+      _resetState();
+    });
+    };
+
+  const _checkNetwork = async (): Promise<boolean> => {
+    const chosenChainId = await window.ethereum.request({
+      method: "eth_chainId",
+    });
+    if (chosenChainId === HARDHAT_NETWORK_ID) {
+      return true;
+    }
+    setNetworkError("Please connect to Hardhat network (localhost:8545)!");
+    return false;
+  };
+
+  const _initialize = async (selectedAccount: string) => {
+    const provider = new ethers.BrowserProvider(window.ethereum);
+    const signer = await provider.getSigner(selectedAccount);
+
+    setCurrentConnection({
+      ...currentConnection,
+      provider,
+      signer,
+      shop: MusicShop__factory.connect(MUSIC_SHOP_ADDRESS, signer),
+    });
+  };
+
+
+
+  const _resetState = () => {
+    setNetworkError(undefined);
+    setTransactionError(undefined);
+    setTxBeingSent(undefined);
+    setCurrentBalance(undefined);
+    setIsOwner(false);
+    setAlbums([]);
+    setCurrentConnection({
+      provider: undefined,
+      signer: undefined,
+      shop: undefined,
+    });
+  };
+
+  const _dismissTransactionError = () => {
+    setTransactionError(undefined);
+  };
+
+  const _getRpcErrorMessage = (error: any): string => {
+    console.log(error);
+    if (error.data) {
+      return error.data.message;
+    }
+    return error.message;
+  };
+
+  const _dismissNetworkError = () => {
+    setNetworkError(undefined);
+  };
+
+
+  const _handleAddAlbum = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!currentConnection?.shop) {
+      return false;
+    }
+
+    const shop = currentConnection.shop;
+    const formData = new FormData(event.currentTarget);
+
+    const title = formData.get("albumTitle")?.toString();
+    const price = formData.get("albumPrice")?.toString();
+    const quantity = formData.get("albumQty")?.toString();
+
+    if (title && price && quantity) {
+      const uid = ethers.solidityPackedKeccak256(["string"], [title]);
+
+      try {
+        const index = await shop.currentIndex();
+
+        const addTx = await shop.addAlbum(
+          uid,
+          title,
+          BigInt(price),
+          BigInt(quantity)
+        );
+
+        setTxBeingSent(addTx.hash);
+
+        await addTx.wait();
+        // setAlbums(
+        //   albums.map((a) => {
+        //     if (a.index === album.index) {
+        //       album.quantity =
+        //         BigInt(album.quantity) - BigInt(1);
+        //       return album;
+        //     } else {
+        //       return a;
+        //     }
+        //   })
+        // );
+     }catch(err){
+      console.error(err);
+      setTransactionError(err);
+    } finally {
+      setTxBeingSent(undefined);
+
+    }
+  };
+};
+
+  
+
+
+  const _handleBuyAlbum = async (
+    album: AlbumProps,
+    event: React.MouseEvent<HTMLButtonElement>
+  ) => {
+    event.preventDefault();
+
+    if (!currentConnection?.shop) {
+      return false;
+    }
+
+    try {
+      const buyTx = await currentConnection.shop.buy(album.index, { value: album.price });
+      setTxBeingSent(buyTx.hash);
+      await buyTx.wait();
+
+      setAlbums(
+        albums.map((a) => {
+          if (a.index === album.index) {
+            album.quantity =
+              BigInt(album.quantity) - BigInt(1);
+            return album;
+          } else {
+            return a;
+          }
+        })
+      );
+    } catch (err) {
+      console.error(err);
+
+      setTransactionError(err);
+    } finally {
+      setTxBeingSent(undefined);
+    }
+  };
+  
+  
+
+
+  const availableAlbums = () => {
+    const albumsList = albums.map((album) => {
+      return (
+        <li key={album.uid}>
+          <>
+            {album.title} (#{album.index.toString()})<br />
+            Price: {album.price.toString()}
+            <br />
+            Qty: {album.quantity.toString()}
+            <br />
+            {BigInt(album.quantity) > BigInt(0) && (
+              <button onClick={(e) => _handleBuyAlbum(album, e)}>
+                Buy 1 copy
+              </button>
+            )}
+          </>
+        </li>
+      );
+    });
+    return albumsList;
+  };
+
+
+ 
+return (
+    <main>
+
+      {!currentConnection?.signer && (
+        <ConnectWallet
+          connectWallet={_connectWallet}
+          networkError={networkError}
+          dismiss={_dismissNetworkError}
         />
-      </div>
+      )}
 
-      <div className="mb-32 grid text-center lg:mb-0 lg:w-full lg:max-w-5xl lg:grid-cols-4 lg:text-left">
-        <a
-          href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className="mb-3 text-2xl font-semibold">
-            Docs{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className="m-0 max-w-[30ch] text-sm opacity-50">
-            Find in-depth information about Next.js features and API.
-          </p>
-        </a>
+      {currentConnection?.signer && (
+        <p>Your address: {currentConnection.signer.address}</p>
+      )}
 
-        <a
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className="mb-3 text-2xl font-semibold">
-            Learn{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className="m-0 max-w-[30ch] text-sm opacity-50">
-            Learn about Next.js in an interactive course with&nbsp;quizzes!
-          </p>
-        </a>
+      {txBeingSent && <WaitingForTransactionMessage txHash={txBeingSent} />}
 
-        <a
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className="mb-3 text-2xl font-semibold">
-            Templates{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className="m-0 max-w-[30ch] text-sm opacity-50">
-            Explore starter templates for Next.js.
-          </p>
-        </a>
+      {transactionError && (
+        <TransactionErrorMessage
+          message={_getRpcErrorMessage(transactionError)}
+          dismiss={_dismissTransactionError}
+        />
+      )}
 
-        <a
-          href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className="mb-3 text-2xl font-semibold">
-            Deploy{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className="m-0 max-w-[30ch] text-balance text-sm opacity-50">
-            Instantly deploy your Next.js site to a shareable URL with Vercel.
-          </p>
-        </a>
-      </div> */}
+      {currentBalance && (
+        <p>Your balance: {ethers.formatEther(currentBalance)} ETH</p>
+      )}
+
+      {albums.length > 0 && <ul>{availableAlbums()}</ul>}
+
+      {isOwner && !txBeingSent && (
+        <form onSubmit={_handleAddAlbum}>
+                  <h2>Add album</h2>
+
+                  <label>
+                    Title:
+                    <input type="text" name="albumTitle" />
+                  </label>
+
+                  <label>
+                    Price:
+                    <input type="text" name="albumPrice" />
+                  </label>
+
+                  <label>
+                    Qty:
+                    <input type="text" name="albumQty" />
+                  </label>
+
+                  <input type="submit" value="Add!" />
+                </form>
+      )}
 
     </main>
   );
